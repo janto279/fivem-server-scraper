@@ -465,12 +465,29 @@ def export_csv(servers: list, filename: str = "leads.csv"):
 # ═══════════════════════════════════════════════════════════════
 #  OUTPUT — GOOGLE SHEETS
 # ═══════════════════════════════════════════════════════════════
+
+# Column mapping for append mode (matches user's tracking sheet)
+TRACKING_COLUMNS = [
+    "SERVER ADI",       # A
+    "SERVER TİPİ",      # B
+    "SERVER DC",         # C
+    "FRAMEWORK",         # D
+    "GÖNDERİLDİ",       # E - checkbox (manual)
+    "CEVAP BEKLENİYOR",  # F - checkbox (manual)
+    "GÖRÜŞME HALİ",     # G - (manual)
+    "RED",               # H - (manual)
+    "CHAT LİNK",        # I - (manual)
+    "NOT",               # J - (manual)
+]
+
+
 def export_google_sheets(servers: list, config: dict):
     """Write server list to a Google Sheet via Service Account.
 
-    Supports two modes:
-    1. spreadsheet_id set → opens that specific sheet (recommended)
-    2. spreadsheet_id empty → tries to open/create by name
+    Supports three modes:
+    1. append_mode=true  → only add NEW servers, never touch existing rows
+    2. spreadsheet_id    → opens a specific sheet by ID
+    3. default           → open/create by name, overwrite worksheet
     """
     gs_cfg = config["output"]["google_sheets"]
     creds_path = gs_cfg["credentials_file"]
@@ -478,8 +495,9 @@ def export_google_sheets(servers: list, config: dict):
     ws_name = gs_cfg["worksheet_name"]
     share_with = gs_cfg.get("share_with", "")
     sheet_id = gs_cfg.get("spreadsheet_id", "")
+    append_mode = gs_cfg.get("append_mode", False)
 
-    # Lazy imports — only needed when Sheets is enabled
+    # Lazy imports
     try:
         import gspread
         from google.oauth2.service_account import Credentials
@@ -504,50 +522,132 @@ def export_google_sheets(servers: list, config: dict):
 
     spreadsheet = None
 
-    # Mode 1: Open by ID (most reliable)
+    # Open by ID (most reliable)
     if sheet_id:
         try:
             spreadsheet = gc.open_by_key(sheet_id)
-            print(f"    Opened spreadsheet by ID: {sheet_id}")
+            print(f"    Opened spreadsheet by ID")
         except Exception as e:
-            print(f"[✗] Could not open spreadsheet ID '{sheet_id}': {e}")
-            print("    Make sure you shared the sheet with the service account email.")
+            print(f"[✗] Could not open spreadsheet: {e}")
+            print("    Share the sheet with the service account email.")
             return
 
-    # Mode 2: Open by name, or create
+    # Open by name, or create
     if spreadsheet is None:
         try:
             spreadsheet = gc.open(sheet_name)
-            print(f"    Opened existing spreadsheet: '{sheet_name}'")
+            print(f"    Opened: '{sheet_name}'")
         except gspread.SpreadsheetNotFound:
             try:
                 spreadsheet = gc.create(sheet_name)
-                print(f"    Created new spreadsheet: '{sheet_name}'")
+                print(f"    Created: '{sheet_name}'")
                 if share_with:
                     spreadsheet.share(share_with, perm_type="user", role="writer")
-                    print(f"    Shared with: {share_with}")
             except Exception as e:
                 print(f"[✗] Could not create spreadsheet: {e}")
-                print(f"\n    SOLUTION: Create a Google Sheet manually, share it with:")
-                sa_email = ""
-                try:
-                    import json
-                    sa_email = json.load(open(creds_path)).get("client_email", "")
-                except Exception:
-                    pass
-                if sa_email:
-                    print(f"      {sa_email}")
-                print(f"    Then add the spreadsheet ID to config.yaml:")
-                print(f"      spreadsheet_id: \"YOUR_SHEET_ID_HERE\"")
-                print(f"    (ID is in the URL: docs.google.com/spreadsheets/d/SHEET_ID/edit)")
                 return
 
-    # Share if configured and not already shared
+    # ── APPEND MODE ─────────────────────────────────────────
+    if append_mode:
+        _export_append_mode(spreadsheet, servers, ws_name)
+    else:
+        _export_overwrite_mode(spreadsheet, servers, ws_name, share_with)
+
+    print(f"    URL: {spreadsheet.url}")
+
+
+def _export_append_mode(spreadsheet, servers: list, ws_name: str):
+    """Append-only mode: read existing data, add only new servers."""
+    import gspread
+
+    # Get the first worksheet (or specified one)
+    try:
+        worksheet = spreadsheet.worksheet(ws_name)
+    except gspread.WorksheetNotFound:
+        # Use first sheet
+        worksheet = spreadsheet.sheet1
+
+    # Read existing server names + Discord links for dedup
+    existing_data = worksheet.get_all_values()
+
+    existing_names = set()
+    existing_discord = set()
+
+    last_real_row = 1  # Header is row 1
+    
+    for i, row in enumerate(existing_data[1:], start=2):
+        name = row[0].strip().lower() if len(row) > 0 else ""
+        dc = row[2].strip().lower() if len(row) > 2 else ""
+        
+        # If there's an actual Name or Discord link, update the real last row index
+        if name or dc:
+            last_real_row = i
+            
+        if name:
+            existing_names.add(name)
+        if dc:
+            existing_discord.add(dc)
+
+    print(f"    Real populated rows: {last_real_row}")
+
+    # Filter out already-existing servers
+    new_servers = []
+    for s in servers:
+        name = s.get("Server Name", "").strip().lower()
+        dc = s.get("Discord", "").strip().lower()
+
+        # Check both name AND Discord to avoid duplicates
+        if name in existing_names:
+            continue
+        if dc and dc in existing_discord:
+            continue
+
+        new_servers.append(s)
+
+    if not new_servers:
+        print(f"[✓] No new servers to add (all {len(servers)} already exist)")
+        return
+
+    print(f"    Adding {len(new_servers)} new servers starting from row {last_real_row + 1}...")
+
+    # Build rows matching the tracking sheet format
+    new_rows = []
+    for s in new_servers:
+        row = [
+            s.get("Server Name", ""),          # A: SERVER ADI
+            "Roleplay Server",                 # B: SERVER TİPİ
+            s.get("Discord", ""),              # C: SERVER DC
+            s.get("Framework", ""),            # D: FRAMEWORK
+            "FALSE",                           # E: GÖNDERİLDİ (checkbox)
+            "FALSE",                           # F: CEVAP BEKLENİYOR (checkbox)
+            "",                                # G: GÖRÜŞME HALİ
+            "",                                # H: RED
+            "",                                # I: CHAT LİNK
+            "",                                # J: NOT
+        ]
+        new_rows.append(row)
+
+    # Calculate exact range to overwrite empty checkbox rows
+    start_row = last_real_row + 1
+    end_row = start_row + len(new_rows) - 1
+    range_str = f"A{start_row}:J{end_row}"
+
+    # Update overwrites exactly the target range instead of appending at the "FALSE" bound
+    worksheet.update(range_name=range_str, values=new_rows, value_input_option="USER_ENTERED")
+
+    print(f"[✓] {len(new_servers)} new servers added ({len(servers) - len(new_servers)} duplicates skipped)")
+
+
+def _export_overwrite_mode(spreadsheet, servers: list, ws_name: str, share_with: str):
+    """Standard overwrite mode: clear and rewrite all data."""
+    import gspread
+
+    # Share if configured
     if share_with:
         try:
             spreadsheet.share(share_with, perm_type="user", role="writer")
         except Exception:
-            pass  # Already shared or no permission
+            pass
 
     # Get or create worksheet
     try:
@@ -558,24 +658,20 @@ def export_google_sheets(servers: list, config: dict):
             title=ws_name, rows=len(servers) + 1, cols=len(FIELD_NAMES)
         )
 
-    # Write header + data in batches
-    header = FIELD_NAMES
-    rows = [header]
+    # Write header + data
+    rows = [FIELD_NAMES]
     for s in servers:
         rows.append([s.get(col, "") for col in FIELD_NAMES])
 
-    # gspread batch update
     worksheet.update(range_name="A1", values=rows)
 
-    # Format header row (bold)
+    # Format header
     try:
         worksheet.format("A1:E1", {"textFormat": {"bold": True}})
     except Exception:
         pass
 
-    sheet_url = spreadsheet.url
     print(f"[✓] {len(servers)} servers → Google Sheets")
-    print(f"    URL: {sheet_url}")
 
 
 # ═══════════════════════════════════════════════════════════════
