@@ -678,13 +678,19 @@ def main():
     # ── Apply framework filter (post-scan) ─────────────────
     framework_filter = [f.upper() for f in filters.get("frameworks", [])]
     if framework_filter:
+        include_unknown = filters.get("include_unknown_framework", True)
         before = len(results)
         results = [
             (sid, sd, f)
             for sid, sd, f in results
             if sd["Framework"].upper() in framework_filter
+            or (include_unknown and sd["Framework"] == "Unknown")
         ]
+        excluded = before - len(results)
         print(f"      Framework filter: {before} → {len(results)} servers")
+        if include_unknown:
+            unknown_kept = sum(1 for _, sd, _ in results if sd["Framework"] == "Unknown")
+            print(f"      ({unknown_kept} undetected servers included — may match {', '.join(framework_filter)})")
 
     # ── Sort by player count (descending) ──────────────────
     results.sort(key=lambda x: x[1]["Players"], reverse=True)
