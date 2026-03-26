@@ -1,0 +1,36 @@
+# ═══════════════════════════════════════════════════════════════
+#  FiveM Server Scraper — Example Configuration
+# ═══════════════════════════════════════════════════════════════
+# Copy this file to config.yaml and customize it.
+#   cp config.example.yaml config.yaml
+
+# ── Filters ──────────────────────────────────────────────────
+filters:
+  min_players: 15
+  max_players: 0
+  tags:
+    - roleplay
+  exclude_tags: []
+  frameworks: []        # e.g. ["ESX", "QBCORE", "QBOX"]
+  locales: []           # e.g. ["en-US", "tr"]
+  require_discord: false
+  name_contains: ""
+  name_excludes: []
+
+# ── Framework Detection ─────────────────────────────────────
+framework_scan:
+  enabled: true
+  max_workers: 20
+  timeout: 3
+
+# ── Output ───────────────────────────────────────────────────
+output:
+  csv:
+    enabled: true
+    filename: "leads.csv"
+  google_sheets:
+    enabled: false
+    credentials_file: "credentials.json"
+    spreadsheet_name: "FiveM Leads"
+    worksheet_name: "Servers"
+    share_with: ""
