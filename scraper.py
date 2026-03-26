@@ -466,12 +466,18 @@ def export_csv(servers: list, filename: str = "leads.csv"):
 #  OUTPUT — GOOGLE SHEETS
 # ═══════════════════════════════════════════════════════════════
 def export_google_sheets(servers: list, config: dict):
-    """Write server list to a Google Sheet via Service Account."""
+    """Write server list to a Google Sheet via Service Account.
+
+    Supports two modes:
+    1. spreadsheet_id set → opens that specific sheet (recommended)
+    2. spreadsheet_id empty → tries to open/create by name
+    """
     gs_cfg = config["output"]["google_sheets"]
     creds_path = gs_cfg["credentials_file"]
     sheet_name = gs_cfg["spreadsheet_name"]
     ws_name = gs_cfg["worksheet_name"]
     share_with = gs_cfg.get("share_with", "")
+    sheet_id = gs_cfg.get("spreadsheet_id", "")
 
     # Lazy imports — only needed when Sheets is enabled
     try:
@@ -496,37 +502,69 @@ def export_google_sheets(servers: list, config: dict):
     creds = Credentials.from_service_account_file(creds_path, scopes=scopes)
     gc = gspread.authorize(creds)
 
-    # Open or create spreadsheet
-    try:
-        spreadsheet = gc.open(sheet_name)
-        print(f"    Opened existing spreadsheet: '{sheet_name}'")
-    except gspread.SpreadsheetNotFound:
-        spreadsheet = gc.create(sheet_name)
-        print(f"    Created new spreadsheet: '{sheet_name}'")
-        if share_with:
-            spreadsheet.share(share_with, perm_type="user", role="writer")
-            print(f"    Shared with: {share_with}")
+    spreadsheet = None
+
+    # Mode 1: Open by ID (most reliable)
+    if sheet_id:
+        try:
+            spreadsheet = gc.open_by_key(sheet_id)
+            print(f"    Opened spreadsheet by ID: {sheet_id}")
+        except Exception as e:
+            print(f"[✗] Could not open spreadsheet ID '{sheet_id}': {e}")
+            print("    Make sure you shared the sheet with the service account email.")
+            return
+
+    # Mode 2: Open by name, or create
+    if spreadsheet is None:
+        try:
+            spreadsheet = gc.open(sheet_name)
+            print(f"    Opened existing spreadsheet: '{sheet_name}'")
+        except gspread.SpreadsheetNotFound:
+            try:
+                spreadsheet = gc.create(sheet_name)
+                print(f"    Created new spreadsheet: '{sheet_name}'")
+                if share_with:
+                    spreadsheet.share(share_with, perm_type="user", role="writer")
+                    print(f"    Shared with: {share_with}")
+            except Exception as e:
+                print(f"[✗] Could not create spreadsheet: {e}")
+                print(f"\n    SOLUTION: Create a Google Sheet manually, share it with:")
+                sa_email = ""
+                try:
+                    import json
+                    sa_email = json.load(open(creds_path)).get("client_email", "")
+                except Exception:
+                    pass
+                if sa_email:
+                    print(f"      {sa_email}")
+                print(f"    Then add the spreadsheet ID to config.yaml:")
+                print(f"      spreadsheet_id: \"YOUR_SHEET_ID_HERE\"")
+                print(f"    (ID is in the URL: docs.google.com/spreadsheets/d/SHEET_ID/edit)")
+                return
 
     # Share if configured and not already shared
     if share_with:
         try:
             spreadsheet.share(share_with, perm_type="user", role="writer")
         except Exception:
-            pass  # Already shared
+            pass  # Already shared or no permission
 
     # Get or create worksheet
     try:
         worksheet = spreadsheet.worksheet(ws_name)
         worksheet.clear()
     except gspread.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(title=ws_name, rows=len(servers) + 1, cols=len(FIELD_NAMES))
+        worksheet = spreadsheet.add_worksheet(
+            title=ws_name, rows=len(servers) + 1, cols=len(FIELD_NAMES)
+        )
 
-    # Write header + data
+    # Write header + data in batches
     header = FIELD_NAMES
     rows = [header]
     for s in servers:
         rows.append([s.get(col, "") for col in FIELD_NAMES])
 
+    # gspread batch update
     worksheet.update(range_name="A1", values=rows)
 
     # Format header row (bold)
