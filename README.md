@@ -24,7 +24,7 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/YOUR_USERNAME/fivem-server-scraper.git
+git clone https://github.com/janto279/fivem-server-scraper.git
 cd fivem-server-scraper
 
 # Install dependencies
